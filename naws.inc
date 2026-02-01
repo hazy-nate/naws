@@ -1,12 +1,14 @@
 
-; main.inc
+; naws.inc
 
-%ifndef MAIN_INC
-%define MAIN_INC
+%ifndef NAWS_INC
+%define NAWS_INC
 
 %include "util.inc"
 
-PORT        equ htons(8080)
+%define PORT    8080
+%define INDEX   "index.html"
+%define SERVER  "naws"
 
 %endif
 

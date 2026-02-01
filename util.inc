@@ -33,6 +33,7 @@ SYS_MPROTECT        equ 10
 SYS_MUNMAP          equ 11
 SYS_RT_SIGACTION    equ 13
 SYS_RT_SIGRETURN    equ 15
+SYS_PREAD64         equ 17
 SYS_WRITEV          equ 20
 SYS_PIPE            equ 22
 SYS_SENDFILE        equ 40
@@ -99,15 +100,15 @@ STDERR_FILENO   equ 2
 ; === Macros. === ;
 
 ; See read(2).
-%macro SYSCALL_READ 4
+%macro SYSCALL_READ 5
     [SECTION .text]
     xor     eax, eax
     mov     edi, %1         ; int fd
-    lea     rsi, [%2]       ; void buf[.count]
+    lea     rsi, %2         ; void buf[.count]
     mov     rdx, %3         ; size_t count
     syscall
     test    eax, eax
-    jl      %4
+    %4      %5
 %endmacro
 
 ; See write(2).
@@ -116,7 +117,7 @@ STDERR_FILENO   equ 2
     push    SYS_WRITE
     pop     rax
     mov     edi, %1         ; int fd
-    lea     rsi, [%2]       ; const void *buf[.count]
+    lea     rsi, %2         ; const void *buf[.count]
     mov     rdx, %3         ; size_t count
     syscall
     test    eax, eax
@@ -138,12 +139,25 @@ STDERR_FILENO   equ 2
     [SECTION .text]
     push    SYS_OPEN
     pop     rax
-    lea     rdi, [%1]       ; const char *pathname
+    lea     rdi, %1         ; const char *pathname
     mov     rsi, %2         ; int flags
     mov     rdx, %3         ; umode_t mode
     syscall
     test    eax, eax
     jl      %4
+%endmacro
+
+%macro SYSCALL_OPEN_RDONLY 3
+    [SECTION .text]
+    push    SYS_OPEN
+    pop     rax
+    lea     rdi, %1
+    xor     rsi, rsi
+    xor     rdx, rdx
+    syscall
+    test    eax, eax
+    jl      %2
+    mov     %3, eax
 %endmacro
 
 ; See close(2)
@@ -153,6 +167,17 @@ STDERR_FILENO   equ 2
     pop     rax
     mov     edi, %1         ; int fd
     syscall
+%endmacro
+
+; See fstat(2)
+%macro SYSCALL_FSTAT 3
+    push    SYS_FSTAT
+    pop     rax
+    mov     edi, %1         ; int fd
+    lea     rsi, %2         ; struct stat *statbuf
+    syscall
+    test    eax, eax
+    jl      %3
 %endmacro
 
 ; See mmap(2).
@@ -194,8 +219,49 @@ STDERR_FILENO   equ 2
 
 %macro SYSCALL_RT_SIGRETURN 0
     [SECTION .text]
-    mov     rax, SYS_RT_SIGRETURN
+    push    SYS_RT_SIGRETURN
+    pop     rax
     syscall
+%endmacro
+
+; See pread(2).
+%macro SYSCALL_PREAD64 4
+    [SECTION .text]
+    push    SYS_PREAD64
+    pop     rax
+    mov     edi, %1         ; int fd
+    lea     rsi, %2         ; void buf[.count]
+    mov     rdx, %3         ; size_t count
+    xor     r10, r10        ; off_t offset
+    syscall
+    test    eax, eax
+    jl      %4
+%endmacro
+
+; See readv(2)
+%macro SYSCALL_WRITEV 4
+    push    SYS_WRITEV
+    pop     rax
+    mov     edi, %1         ; int fd
+    lea     rsi, %2         ; const struct iovec *iov
+    mov     rdx, %3         ; int iovcnt
+    syscall
+    test    eax, eax
+    jl      $4
+%endmacro
+
+; See sendfile(2)
+%macro SYSCALL_SENDFILE 3
+    [SECTION .text]
+    push    SYS_SENDFILE
+    pop     rax
+    mov     edi, %1         ; int out_fd
+    mov     esi, %2         ; int in_fd
+    xor     rdx, rdx        ; off_t *_Nullable offset
+    mov     r10, 0x7FFFFFFF ; size_t count
+    syscall
+    test    eax, eax
+    jl      %3
 %endmacro
 
 ; See socket(2).
@@ -280,7 +346,7 @@ STDERR_FILENO   equ 2
     jz      %2
 %endmacro
 
-; See fork(2)
+; See fork(2).
 %macro SYSCALL_FORK 1
     [SECTION .text]
     push    SYS_FORK
@@ -290,7 +356,7 @@ STDERR_FILENO   equ 2
     jz      %1
 %endmacro
 
-; See _exit(2)
+; See _exit(2).
 %macro SYSCALL_EXIT_SUCCESS 0
     [SECTION .text]
     push    SYS_EXIT
@@ -299,7 +365,7 @@ STDERR_FILENO   equ 2
     syscall
 %endmacro
 
-; See _exit(2)
+; See _exit(2).
 %macro SYSCALL_EXIT_FAILURE 0
     [SECTION .text]
     push    SYS_EXIT
@@ -308,6 +374,7 @@ STDERR_FILENO   equ 2
     syscall
 %endmacro
 
+; See splice(2).
 %macro SYSCALL_SPLICE 7
     push    SYS_SPLICE
     pop     rax
@@ -333,12 +400,40 @@ struc sigaction_t
 endstruc
 
 ; <netinet/in.h> ;
-struc sockaddr_in6
-    .sin6_family:   resw 1  ; sa_family_t sin6_family
-    .sin6_port:     resw 1  ; in_port_t sin6_port
+struc sockaddr_in6_t
+    .sin6_family    resw 1  ; sa_family_t sin6_family
+    .sin6_port      resw 1  ; in_port_t sin6_port
     .sin6_flowinfo  resd 1  ; uint32_t sin6_flowinfo
-    .sin6_addr:     reso 1  ; struct in6_addr sin6_addr
-    .sin6_scope_id: resd 1  ; uint32_t sin6_scope_id
+    .sin6_addr      reso 1  ; struct in6_addr sin6_addr
+    .sin6_scope_id  resd 1  ; uint32_t sin6_scope_id
+endstruc
+
+; <bits/struct_stat.h> ;
+struc stat_t
+    .st_dev         resq 1
+    .st_ino         resq 1
+    .st_nlink       resq 1
+    .st_mode        resd 1
+    .st_uid         resd 1
+    .st_gid         resd 1
+    .pad0           resd 1
+    .st_rdev        resq 1
+    .st_size        resq 1
+    .st_blksize     resq 1
+    .st_blocks      resq 1
+    .st_atime_sec   resq 1
+    .st_atime_nsec  resq 1
+    .st_mtime_sec   resq 1
+    .st_mtime_nsec  resq 1
+    .st_ctime_sec   resq 1
+    .st_ctime_nsec  resq 1
+    .reserved       resq 3
+endstruc
+
+; <sys/uio.h> ;
+struc iovec_t
+    .iov_base   resq 1      ; void *iov_base
+    .iov_len    resq 1      ; size_t iov_len
 endstruc
 
 %endif

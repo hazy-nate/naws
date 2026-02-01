@@ -2,127 +2,215 @@
 ; naws.asm
 
 default rel
+
 global _start
+extern h_line_delim
+extern h_hdr_delim
+extern h_ver
+extern h_200
+extern h_400
+extern h_404
+extern h_hdr_conn
+extern h_hdr_cont_len
+extern h_hdr_cont_type
+extern mime_type_text_css
+extern mime_type_text_html
+extern mime_type_text_js
+extern mime_type_image_jpeg
+extern mime_type_image_png
+extern mime_type_image_xicon
 
 %include "naws.inc"
+%include "http.inc"
 %include "util.inc"
 
-REQUEST_BUF_SIZE equ 1024
+REQ_BUF_SIZE		equ 1024
+RES_HDRS_BUF_SIZE	equ 1024
+RES_CONT_BUF_SIZE	equ 1024
 
 section .data
-
-	received_sigint db 0
-
-	srv_sockaddr_in6:
-		dw AF_INET6	; sin6_family:		AF_INET.
-		dw PORT		; sin6_port:		8080.
-		dd 0		; sin6_flowinfo:	0.
-		dq 0, 0		; sin6_addr:		0.
-		dd 0		; sin6_scope_id:	0.
-
-	srv_sockopt_ipv6only dd 0
-	srv_sockopt_reuseaddr dd 1
+	sigint_sigaction: istruc sigaction_t
+		at sigaction_t.sa_handler,	dq sigint_handler
+		at sigaction_t.sa_flags,	dq SA_NOCLDWAIT | SA_RESTORER
+		at sigaction_t.sa_restorer, dq sigint_restorer
+		at sigaction_t.sa_mask,		dq 0
+	iend
+	sigint_flag db 0
+	srv_sockaddr_in6: istruc sockaddr_in6_t
+		at sockaddr_in6_t.sin6_family,		dw AF_INET6
+		at sockaddr_in6_t.sin6_port,		dw htons(PORT)
+		at sockaddr_in6_t.sin6_flowinfo,	dd 0
+		at sockaddr_in6_t.sin6_addr,		dq 0, 0
+		at sockaddr_in6_t.sin6_scope_id,	dd 0
+	iend
+	srv_sockopt_ipv6only	dd 0
+	srv_sockopt_reuseaddr	dd 1
 
 section .bss
-	sigint_act	resb sigaction_t_size
-	srv_fd		resd 1
-	cli_fd		resd 1
-	request_buf resb REQUEST_BUF_SIZE
+	srv_fd				resd 1
+	cli_fd				resd 1
+	file_fd				resd 1
+	file_stat			resb stat_t_size
+	req_buf				resb REQ_BUF_SIZE
+	res_hdrs_buf		resb RES_HDRS_BUF_SIZE
+	res_cont_buf		resb RES_CONT_BUF_SIZE
+
+section .rodata
+	index_fp	db INDEX, 0
+	server		db SERVER
 
 section .text
-align 16
 _start:
-	; Set up signal actions.
-	lea		rdi, [sigint_act]
-	xor		rax, rax
-	mov		rcx, sigaction_t_size
-	rep stosb
-	lea		rax, [sigint_handler]
-	mov		[sigint_act + sigaction_t.sa_handler], rax
-	mov		qword [sigint_act + sigaction_t.sa_flags], (SA_NOCLDWAIT | SA_RESTORER)
-	lea		rax, [sigint_restorer]
-	mov		[sigint_act + sigaction_t.sa_restorer], rax
-	SYSCALL_RT_SIGACTION SIGINT, [sigint_act]
+	SYSCALL_RT_SIGACTION SIGINT, [sigint_sigaction]
+	SYSCALL_SOCKET		AF_INET6, SOCK_STREAM, 0, exit_failure, [srv_fd]
+	SYSCALL_SETSOCKOPT	[srv_fd], IPPROTO_IPV6, IPV6_V6ONLY, srv_sockopt_ipv6only, 4, exit_failure
+	SYSCALL_SETSOCKOPT	[srv_fd], SOL_SOCKET, SO_REUSEADDR, srv_sockopt_reuseaddr, 4, exit_failure
+	SYSCALL_BIND		[srv_fd], srv_sockaddr_in6, sockaddr_in6_t_size, exit_failure
+	SYSCALL_LISTEN		[srv_fd], 10, exit_failure
 
-	SYSCALL_SOCKET	AF_INET6, SOCK_STREAM, 0, exit_failure, [srv_fd]
-	SYSCALL_SETSOCKOPT [srv_fd], IPPROTO_IPV6, IPV6_V6ONLY, srv_sockopt_ipv6only, 4, exit_failure
-	SYSCALL_SETSOCKOPT [srv_fd], SOL_SOCKET, SO_REUSEADDR, srv_sockopt_reuseaddr, 4, exit_failure
-	SYSCALL_BIND	[srv_fd], srv_sockaddr_in6, sockaddr_in6_size, exit_failure
-	SYSCALL_LISTEN	[srv_fd], 10, exit_failure
-
-align 16
-server_loop:
-	cmp		byte [received_sigint], 1
+srv_handler:
+	cmp		byte [sigint_flag], 1	; Exit if SIGINT signal has been received.
 	je		.exit
-	SYSCALL_ACCEPT	[srv_fd], server_loop, [cli_fd]
-	SYSCALL_FORK	connection_handler
+	SYSCALL_ACCEPT	[srv_fd], srv_handler, [cli_fd]
+	SYSCALL_FORK	cli_handler
 	SYSCALL_CLOSE	[cli_fd]
-	jmp		server_loop
+	jmp		srv_handler
 .exit:
 	SYSCALL_CLOSE	[srv_fd]
 	jmp		exit_success
 
-align 16
-connection_handler:
+cli_handler:
 	SYSCALL_CLOSE	[srv_fd]
-	SYSCALL_READ	[cli_fd], request_buf, REQUEST_BUF_SIZE, exit_failure
+.loop:
+	SYSCALL_READ	[cli_fd], [req_buf], REQ_BUF_SIZE, jle, .close_and_exit
 	cmp		dword [rsi], 'GET '
-	je		.get_request
-	cmp		dword [rsi], 'POST'
-	je		.post_request
-	cmp		dword [rsi], 'HEAD'
-	je		.head_request
-	cmp		dword [rsi], 'PUT '
-	je		.put_request
-	cmp		dword [rsi], 'DELE'
-	je		.delete_request
-	jmp		.exit
-align 16
-.get_request:
-	xchg	eax, ecx
-	sub		ecx, 5
-	jle		.exit
+	je		.get_req
+	jmp		.loop
+.get_req:
 	lodsd
-	push	rsi
-	pop		rdi
-	mov		al, 0x20
+	mov		rdi, rsi
+	mov		rcx, REQ_BUF_SIZE
+	mov		al, ' '
 	repne scasb
-	jne		.exit
-	mov		byte [rdi - 1], 0
-	; RSI:		Start of path.
-	; RDI - 1:	End of path.
+	jne		.close_and_exit
+	dec		rdi
+	mov		byte [rdi], 0
+	inc		rsi
+	cmp		byte [rsi], 0
+	jne		.get_req_file
+	lea		rsi, [index_fp]
+.get_req_file:
+	SYSCALL_OPEN_RDONLY	[rsi], .close_and_exit, [file_fd]
+	SYSCALL_FSTAT		[file_fd], file_stat, .close_and_exit
 
-align 16
-.post_request:
-align 16
-.head_request:
-align 16
-.put_request:
-align 16
-.delete_request:
-	mov		eax, [rsi + 4]
-	and		eax, 0x00FFFFFF
-	cmp		eax, 'TE '
-	jne		.exit
-align 16
-.exit:
+	lea		rdi, [res_hdrs_buf]
+
+	mov		rsi, h_ver
+	mov		rcx, H_VER_SIZE
+	rep movsb
+
+	mov		rsi, h_200
+	mov		rcx, H_200_SIZE
+	rep movsb
+
+	mov		rsi, h_line_delim
+	mov		rcx, H_LINE_DELIM_SIZE
+	rep movsb
+
+	mov		rsi, h_hdr_cont_len
+	mov		rcx, H_HDR_CONT_LEN_SIZE
+	rep movsb
+
+	mov		rsi, h_hdr_delim
+	mov		rcx, H_HDR_DELIM_SIZE
+	rep movsb
+
+	mov		rax, [file_stat + stat_t.st_size]
+	call	append_uint
+
+	mov		rsi, h_line_delim
+	mov		rcx, H_LINE_DELIM_SIZE
+	rep movsb
+
+	mov		rsi, h_hdr_cont_type
+	mov		rcx, H_HDR_CONT_TYPE_SIZE
+	rep movsb
+
+	mov		rsi, h_hdr_delim
+	mov		rcx, H_HDR_DELIM_SIZE
+	rep movsb
+
+	; Determine the correct mime type to use.
+
+
+	mov		rsi, mime_type_text_html
+	mov		rcx, MIME_TYPE_TEXT_HTML_SIZE
+	rep movsb
+
+	mov		rsi, h_line_delim
+	mov		rcx, H_LINE_DELIM_SIZE
+	rep movsb
+
+	mov		rsi, h_line_delim
+	mov		rcx, H_LINE_DELIM_SIZE
+	rep movsb
+
+	lea		rax, [res_hdrs_buf]
+	sub		rdi, rax
+	mov		r8, rdi
+
+	SYSCALL_WRITE		[cli_fd], [res_hdrs_buf], r8, .close_and_exit
+	SYSCALL_SENDFILE	[cli_fd], [file_fd], .close_and_exit
+	SYSCALL_CLOSE		[file_fd]
+	jmp		.loop
+.close_and_exit:
 	SYSCALL_CLOSE	[cli_fd]
 	jmp		exit_success
 
-align 16
+append_uint:
+    push    rbx
+    push    rcx
+    push    rdx
+    mov     rbx, 10
+    xor     rcx, rcx
+.div_loop:
+    xor     rdx, rdx
+    div     rbx
+    push    rdx
+    inc     rcx
+    test    rax, rax
+    jnz     .div_loop
+.write_loop:
+    pop     rax
+    add     al, '0'
+    stosb
+    loop    .write_loop
+    pop     rdx
+    pop     rcx
+    pop     rbx
+    ret
+
+copy_string:
+	mov		al, [rsi]
+	inc		rsi
+	test	al, al
+	jz		.done
+	mov		[rdi], al
+	inc		rdi
+	jmp		copy_string
+.done:
+	ret
+
 sigint_restorer:
 	SYSCALL_RT_SIGRETURN
 
-align 16
 sigint_handler:
-	mov		byte [received_sigint], 1
+	mov		byte [sigint_flag], 1
 	ret
 
-align 16
 exit_success:
 	SYSCALL_EXIT_SUCCESS
 
-align 16
 exit_failure:
 	SYSCALL_EXIT_FAILURE
 
