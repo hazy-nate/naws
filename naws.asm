@@ -16,9 +16,11 @@ extern h_hdr_cont_type
 extern mime_type_text_css
 extern mime_type_text_html
 extern mime_type_text_js
+extern mime_type_text_plain
 extern mime_type_image_jpeg
 extern mime_type_image_png
 extern mime_type_image_xicon
+extern mime_type_table
 
 %include "naws.inc"
 %include "http.inc"
@@ -26,7 +28,6 @@ extern mime_type_image_xicon
 
 REQ_BUF_SIZE		equ 1024
 RES_HDRS_IOVEC_CNT	equ 16
-RES_CONT_BUF_SIZE	equ 1024
 
 section .data
 	sigint_sigaction: istruc sigaction_t
@@ -54,7 +55,8 @@ section .bss
 	file_size_str		resb 10
 	req_buf				resb REQ_BUF_SIZE
 	res_hdrs_iovec		resb iovec_t_size * RES_HDRS_IOVEC_CNT
-	res_cont_buf		resb RES_CONT_BUF_SIZE
+	res_mime_type		resq 1
+	res_mime_type_size	resb 1
 
 section .rodata
 	index_fp	db INDEX, 0
@@ -106,6 +108,7 @@ cli_handler:
 	jne		.get_req_file
 	lea		rsi, [index_fp]
 .get_req_file:
+	call	get_mime_type
 	SYSCALL_OPEN_RDONLY	[rsi], .close_and_exit, [file_fd]
 	SYSCALL_FSTAT		[file_fd], file_stat, .close_and_exit
 
@@ -120,16 +123,8 @@ cli_handler:
 	mov		rdx, H_200_SIZE
 	call	append_iovec
 
-	mov		rsi, h_line_delim
-	mov		rdx, H_LINE_DELIM_SIZE
-	call	append_iovec
-
 	mov		rsi, h_hdr_cont_len
 	mov		rdx, H_HDR_CONT_LEN_SIZE
-	call	append_iovec
-
-	mov		rsi, h_hdr_delim
-	mov		rdx, H_HDR_DELIM_SIZE
 	call	append_iovec
 
 	mov		rax, [file_stat + stat_t.st_size]
@@ -149,18 +144,8 @@ cli_handler:
 	mov		rdx, H_HDR_CONT_TYPE_SIZE
 	call	append_iovec
 
-	mov		rsi, h_hdr_delim
-	mov		rdx, H_HDR_DELIM_SIZE
-	call	append_iovec
-
-	; TODO: Determine the correct mime type to use.
-
-	mov		rsi, mime_type_text_html
-	mov		rdx, MIME_TYPE_TEXT_HTML_SIZE
-	call	append_iovec
-
-	mov		rsi, h_line_delim
-	mov		rdx, H_LINE_DELIM_SIZE
+	mov		rsi, [res_mime_type]
+	mov		rdx, [res_mime_type_size]
 	call	append_iovec
 
 	mov		rsi, h_line_delim
@@ -174,6 +159,68 @@ cli_handler:
 .close_and_exit:
 	SYSCALL_CLOSE	[cli_fd]
 	jmp		exit_success
+
+get_mime_type:
+    ; --- 1. Find the Dot ---
+    mov     rdi, rsi        ; Copy RSI to RDI (RSI is safe!)
+    xor     al, al
+    mov     rcx, -1
+    repne scasb             ; Scan using RDI
+
+.find_dot:
+    dec     rdi
+    cmp     byte [rdi], '.'
+    je      .check_ext
+    cmp     rdi, rsi
+    ja      .find_dot
+    jmp     .set_default
+
+.check_ext:
+    inc     rdi             ; Point to start of extension
+
+    ; --- 2. Sanitize to Stack (Using RDX) ---
+    xor     rax, rax
+    push    rax             ; Push 8 bytes of zeros
+    mov     rdx, rsp        ; Use RDX to write to stack (RSI untouched)
+    xor     rcx, rcx
+
+.sanitize_loop:
+    mov     al, [rdi + rcx]
+    test    al, al
+    jz      .load_clean
+    cmp     rcx, 7
+    jge     .load_clean
+
+    mov     [rdx + rcx], al
+    inc     rcx
+    jmp     .sanitize_loop
+
+.load_clean:
+    pop     rax             ; Pop the clean integer (Stack balanced)
+
+    ; --- 3. Table Scan ---
+    lea     rcx, [mime_type_table]
+    mov     rdx, MIME_TYPE_TABLE_CNT
+
+.scan_loop:
+    cmp     rax, [rcx]
+    je      .found
+    add     rcx, 24
+    dec     rdx
+    jnz     .scan_loop
+
+.set_default:
+    lea     rax, [rel mime_type_text_plain]
+    mov     [res_mime_type], rax
+    mov     qword [res_mime_type_size], MIME_TYPE_TEXT_PLAIN_SIZE
+    ret
+
+.found:
+    mov     rax, [rcx + 8]
+    mov     [res_mime_type], rax
+    mov     rax, [rcx + 16]
+    mov     [res_mime_type_size], rax
+    ret
 
 ; FUNCTION:	append_uint.
 ; DESC:		Writes an unsigned integer as a string to a buffer.
