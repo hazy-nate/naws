@@ -25,7 +25,7 @@ extern mime_type_image_xicon
 %include "util.inc"
 
 REQ_BUF_SIZE		equ 1024
-RES_HDRS_BUF_SIZE	equ 1024
+RES_HDRS_IOVEC_CNT	equ 16
 RES_CONT_BUF_SIZE	equ 1024
 
 section .data
@@ -51,8 +51,9 @@ section .bss
 	cli_fd				resd 1
 	file_fd				resd 1
 	file_stat			resb stat_t_size
+	file_size_str		resb 10
 	req_buf				resb REQ_BUF_SIZE
-	res_hdrs_buf		resb RES_HDRS_BUF_SIZE
+	res_hdrs_iovec		resb iovec_t_size * RES_HDRS_IOVEC_CNT
 	res_cont_buf		resb RES_CONT_BUF_SIZE
 
 section .rodata
@@ -70,18 +71,23 @@ _start:
 
 srv_handler:
 	cmp		byte [sigint_flag], 1	; Exit if SIGINT signal has been received.
-	je		.exit
+	je		.close_and_exit
 	SYSCALL_ACCEPT	[srv_fd], srv_handler, [cli_fd]
 	SYSCALL_FORK	cli_handler
 	SYSCALL_CLOSE	[cli_fd]
 	jmp		srv_handler
-.exit:
+.close_and_exit:
 	SYSCALL_CLOSE	[srv_fd]
 	jmp		exit_success
 
+; JUMP:		cli_handler.
+; DESC:		When a new client connects to the server, the process is forked and
+;			the child begins execution here.
 cli_handler:
 	SYSCALL_CLOSE	[srv_fd]
 .loop:
+	cmp		byte [sigint_flag], 1	; Exit if SIGINT signal has been received.
+	je		.close_and_exit
 	SYSCALL_READ	[cli_fd], [req_buf], REQ_BUF_SIZE, jle, .close_and_exit
 	cmp		dword [rsi], 'GET '
 	je		.get_req
@@ -103,63 +109,65 @@ cli_handler:
 	SYSCALL_OPEN_RDONLY	[rsi], .close_and_exit, [file_fd]
 	SYSCALL_FSTAT		[file_fd], file_stat, .close_and_exit
 
-	lea		rdi, [res_hdrs_buf]
+	lea		r13, [res_hdrs_iovec]
+	xor		r12, r12
 
 	mov		rsi, h_ver
-	mov		rcx, H_VER_SIZE
-	rep movsb
+	mov		rdx, H_VER_SIZE
+	call	append_iovec
 
 	mov		rsi, h_200
-	mov		rcx, H_200_SIZE
-	rep movsb
+	mov		rdx, H_200_SIZE
+	call	append_iovec
 
 	mov		rsi, h_line_delim
-	mov		rcx, H_LINE_DELIM_SIZE
-	rep movsb
+	mov		rdx, H_LINE_DELIM_SIZE
+	call	append_iovec
 
 	mov		rsi, h_hdr_cont_len
-	mov		rcx, H_HDR_CONT_LEN_SIZE
-	rep movsb
+	mov		rdx, H_HDR_CONT_LEN_SIZE
+	call	append_iovec
 
 	mov		rsi, h_hdr_delim
-	mov		rcx, H_HDR_DELIM_SIZE
-	rep movsb
+	mov		rdx, H_HDR_DELIM_SIZE
+	call	append_iovec
 
 	mov		rax, [file_stat + stat_t.st_size]
+	mov		rdi, file_size_str
 	call	append_uint
+	mov     rsi, file_size_str
+    lea     rdx, [file_size_str]
+    neg     rdx
+    add     rdx, rdi
+    call    append_iovec
 
 	mov		rsi, h_line_delim
-	mov		rcx, H_LINE_DELIM_SIZE
-	rep movsb
+	mov		rdx, H_LINE_DELIM_SIZE
+	call	append_iovec
 
 	mov		rsi, h_hdr_cont_type
-	mov		rcx, H_HDR_CONT_TYPE_SIZE
-	rep movsb
+	mov		rdx, H_HDR_CONT_TYPE_SIZE
+	call	append_iovec
 
 	mov		rsi, h_hdr_delim
-	mov		rcx, H_HDR_DELIM_SIZE
-	rep movsb
+	mov		rdx, H_HDR_DELIM_SIZE
+	call	append_iovec
 
-	; Determine the correct mime type to use.
-
+	; TODO: Determine the correct mime type to use.
 
 	mov		rsi, mime_type_text_html
-	mov		rcx, MIME_TYPE_TEXT_HTML_SIZE
-	rep movsb
+	mov		rdx, MIME_TYPE_TEXT_HTML_SIZE
+	call	append_iovec
 
 	mov		rsi, h_line_delim
-	mov		rcx, H_LINE_DELIM_SIZE
-	rep movsb
+	mov		rdx, H_LINE_DELIM_SIZE
+	call	append_iovec
 
 	mov		rsi, h_line_delim
-	mov		rcx, H_LINE_DELIM_SIZE
-	rep movsb
+	mov		rdx, H_LINE_DELIM_SIZE
+	call	append_iovec
 
-	lea		rax, [res_hdrs_buf]
-	sub		rdi, rax
-	mov		r8, rdi
-
-	SYSCALL_WRITE		[cli_fd], [res_hdrs_buf], r8, .close_and_exit
+	SYSCALL_WRITEV		[cli_fd], res_hdrs_iovec, r12, .close_and_exit
 	SYSCALL_SENDFILE	[cli_fd], [file_fd], .close_and_exit
 	SYSCALL_CLOSE		[file_fd]
 	jmp		.loop
@@ -167,6 +175,13 @@ cli_handler:
 	SYSCALL_CLOSE	[cli_fd]
 	jmp		exit_success
 
+; FUNCTION:	append_uint.
+; DESC:		Writes an unsigned integer as a string to a buffer.
+; ARGS:
+;	RAX	->	Integer to convert.
+;	RDI	->	Pointer to start within buffer.
+; RETURNS:
+;	RDI	->	Pointer to byte after the last digit within the buffer.
 append_uint:
     push    rbx
     push    rcx
@@ -190,27 +205,44 @@ append_uint:
     pop     rbx
     ret
 
-copy_string:
-	mov		al, [rsi]
-	inc		rsi
-	test	al, al
-	jz		.done
-	mov		[rdi], al
-	inc		rdi
-	jmp		copy_string
-.done:
+; FUNCTION:	append_iovec.
+; DESC:		Inserts a new entry into an iovec array and increments the counter.
+; ARGS:
+;	R13 ->	Pointer to start of iovec array.
+;	RSI	->	Pointer to start within buffer.
+;	RDX ->	Length of buffer.
+;	R12 ->	Current number of segments.
+; RETURNS:
+;	R12 ->	Incremented number of segments.
+append_iovec:
+	mov		rax, r12
+	shl		rax, 4
+	mov		[r13 + rax + iovec_t.iov_base], rsi
+	mov		[r13 + rax + iovec_t.iov_len], rdx
+	inc		r12
 	ret
 
+; JUMP:		sigint_restorer.
+; DESC:		Makes a SYS_RT_SIGRETURN syscall.
+; NOTES:	This procedure is stored as the .sa_restorer for the
+;			sigint_sigaction struct.
 sigint_restorer:
 	SYSCALL_RT_SIGRETURN
 
+; FUNCTION: sigint_handler.
+; DESC:		Turns on the sigint_flag.
+; NOTES:	Once the sigint_flag is set, the server and child loops terminate.
 sigint_handler:
 	mov		byte [sigint_flag], 1
 	ret
 
+; JUMP:		exit_success.
+; DESC:		Makes a SYS_EXIT syscall with a status of 0.
 exit_success:
 	SYSCALL_EXIT_SUCCESS
 
+; JUMP:		exit_failure.
+; DESC:		Makes a SYS_EXIT syscall with a status of 1.
 exit_failure:
 	SYSCALL_EXIT_FAILURE
 

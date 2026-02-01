@@ -147,6 +147,7 @@ STDERR_FILENO   equ 2
     jl      %4
 %endmacro
 
+; See open(2).
 %macro SYSCALL_OPEN_RDONLY 3
     [SECTION .text]
     push    SYS_OPEN
@@ -160,7 +161,7 @@ STDERR_FILENO   equ 2
     mov     %3, eax
 %endmacro
 
-; See close(2)
+; See close(2).
 %macro SYSCALL_CLOSE 1
     [SECTION .text]
     push    SYS_CLOSE
@@ -169,7 +170,7 @@ STDERR_FILENO   equ 2
     syscall
 %endmacro
 
-; See fstat(2)
+; See fstat(2).
 %macro SYSCALL_FSTAT 3
     push    SYS_FSTAT
     pop     rax
@@ -206,6 +207,7 @@ STDERR_FILENO   equ 2
     syscall
 %endmacro
 
+; See sigaction(2).
 %macro SYSCALL_RT_SIGACTION 2
     [SECTION .text]
     push    SYS_RT_SIGACTION
@@ -217,6 +219,7 @@ STDERR_FILENO   equ 2
     syscall
 %endmacro
 
+; See sigreturn(2).
 %macro SYSCALL_RT_SIGRETURN 0
     [SECTION .text]
     push    SYS_RT_SIGRETURN
@@ -238,7 +241,7 @@ STDERR_FILENO   equ 2
     jl      %4
 %endmacro
 
-; See readv(2)
+; See readv(2).
 %macro SYSCALL_WRITEV 4
     push    SYS_WRITEV
     pop     rax
@@ -247,10 +250,10 @@ STDERR_FILENO   equ 2
     mov     rdx, %3         ; int iovcnt
     syscall
     test    eax, eax
-    jl      $4
+    jl      %4
 %endmacro
 
-; See sendfile(2)
+; See sendfile(2).
 %macro SYSCALL_SENDFILE 3
     [SECTION .text]
     push    SYS_SENDFILE
@@ -292,7 +295,7 @@ STDERR_FILENO   equ 2
     mov     %3, rax
 %endmacro
 
-; See bind(2)
+; See bind(2).
 %macro SYSCALL_BIND 4
     [SECTION .text]
     push    SYS_BIND
@@ -410,24 +413,24 @@ endstruc
 
 ; <bits/struct_stat.h> ;
 struc stat_t
-    .st_dev         resq 1
-    .st_ino         resq 1
-    .st_nlink       resq 1
-    .st_mode        resd 1
-    .st_uid         resd 1
-    .st_gid         resd 1
-    .pad0           resd 1
-    .st_rdev        resq 1
-    .st_size        resq 1
-    .st_blksize     resq 1
-    .st_blocks      resq 1
-    .st_atime_sec   resq 1
-    .st_atime_nsec  resq 1
-    .st_mtime_sec   resq 1
-    .st_mtime_nsec  resq 1
-    .st_ctime_sec   resq 1
-    .st_ctime_nsec  resq 1
-    .reserved       resq 3
+    .st_dev         resq 1  ; __dev_t st_dev
+    .st_ino         resq 1  ; __ino_t st_ino
+    .st_nlink       resq 1  ; __nlink_t st_nlink
+    .st_mode        resd 1  ; __mode_t st_mode
+    .st_uid         resd 1  ; __uid_t st_uid
+    .st_gid         resd 1  ; __gid_t st_gid
+    .pad0           resd 1  ; int pad0
+    .st_rdev        resq 1  ; __dev_t st_rdev
+    .st_size        resq 1  ; __off_t st_size
+    .st_blksize     resq 1  ; __blksize_t st_blksize
+    .st_blocks      resq 1  ; __blkcnt_t st_blocks
+    .st_atime_sec   resq 1  ; __time_t st_atime
+    .st_atime_nsec  resq 1  ; __syscall_ulong_t st_atimensec
+    .st_mtime_sec   resq 1  ; __time_t st_mtime
+    .st_mtime_nsec  resq 1  ; __syscall_ulong_t st_mtimensec
+    .st_ctime_sec   resq 1  ; __time_t st_ctime
+    .st_ctime_nsec  resq 1  ; __syscall_ulong_t st_ctimensec
+    .reserved       resq 3  ; __syscall_slong_t __glibc_reserved[3]
 endstruc
 
 ; <sys/uio.h> ;

@@ -1,11 +1,12 @@
 #!/bin/sh
 
 echo "Compiling naws..."
-nasm -f elf64 -o http.o -O3 http.asm
-nasm -f elf64 -o naws.o -O3 naws.asm
+mkdir -p build
+nasm -f elf64 -o build/http.o -O3 http.asm
+nasm -f elf64 -o build/naws.o -O3 naws.asm
 
 echo "Linking naws..."
-mold -o naws http.o naws.o
+mold -o naws build/*
 
 echo "Ensuring it is executable..."
 chmod +x naws
