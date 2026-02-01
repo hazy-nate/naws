@@ -126,6 +126,7 @@ STDERR_FILENO   equ 2
 
 ; See write(2).
 %macro SYSCALL_WRITE_STDOUT 2
+    [SECTION .text]
     push    1
     pop     rax
     mov     rdi, rax
@@ -172,6 +173,7 @@ STDERR_FILENO   equ 2
 
 ; See fstat(2).
 %macro SYSCALL_FSTAT 3
+    [SECTION .text]
     push    SYS_FSTAT
     pop     rax
     mov     edi, %1         ; int fd
@@ -243,6 +245,7 @@ STDERR_FILENO   equ 2
 
 ; See readv(2).
 %macro SYSCALL_WRITEV 4
+    [SECTION .text]
     push    SYS_WRITEV
     pop     rax
     mov     edi, %1         ; int fd
@@ -379,6 +382,7 @@ STDERR_FILENO   equ 2
 
 ; See splice(2).
 %macro SYSCALL_SPLICE 7
+    [SECTION .text]
     push    SYS_SPLICE
     pop     rax
     mov     rdi, %1         ; int fd_in
