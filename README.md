@@ -19,6 +19,10 @@
 CompuGuessr is a FastCGI web application that gamifies challenges involving code
 and data.
 
+This was made for my full-stack web development course at Boise State University.
+I intended for this project to be a way for me to deepen my understanding of low-
+level software development. Feel free to examine the code and see how it works.
+
 ## Building
 
 The easiest way to build the project is within a Docker container. The
